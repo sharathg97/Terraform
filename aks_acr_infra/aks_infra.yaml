@@ -1,0 +1,183 @@
+trigger: none
+pool:
+  name: aks-agent-pool
+  demands:
+    - Agent.Name -equals aks-new-agent
+variables:
+  - name: WORKING_DIR
+    value: terraform
+  - name: AZURE_SERVICE_CONNECTION
+    value: shar-new-ser-con
+  - name: backend_resource_group_name
+    value: shar-stracc-grp
+  - name: backend_storage_account_name
+    value: sharstracc123
+  - name: backend_container_name
+    value: sharcont
+  - name: backend_key
+    value: aks.terraform.tfstate
+  - group: aksVariables
+stages:
+  - stage: Validate
+    displayName: Terraform Validate
+    jobs:
+      - job: ValidateJob
+        displayName: Validate Terraform Code
+        pool:
+          name: aks-agent-pool
+        steps:
+          - checkout: self
+            clean: true
+          - task: AzureCLI@2
+            displayName: Check Tools and Terraform Files
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+              inlineScript: |
+                Write-Host "Current path:"
+                Get-Location
+
+                Write-Host "Files in working directory:"
+                Get-ChildItem -Force
+
+                terraform version
+                az --version
+                git --version
+          - task: AzureCLI@2
+            displayName: Terraform Init
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+              inlineScript: >
+                terraform init -reconfigure \
+                  -backend-config="resource_group_name=$(backend_resource_group_name)" \
+                  -backend-config="storage_account_name=$(backend_storage_account_name)" \
+                  -backend-config="container_name=$(backend_container_name)" \
+                  -backend-config="key=$(backend_key)"
+          - task: AzureCLI@2
+            displayName: Terraform Format Check
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+              inlineScript: |
+                terraform fmt -recursive
+                terraform fmt -check -recursive
+          - task: AzureCLI@2
+            displayName: Terraform Validate
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+              inlineScript: |
+                terraform validate
+            env:
+              TF_VAR_subscription_id: $(subscription_id)
+              TF_VAR_resource_group_name: $(resource_group_name)
+              TF_VAR_location: $(location)
+              TF_VAR_acr_name: $(acr_name)
+              TF_VAR_aks_cluster_name: $(aks_cluster_name)
+              TF_VAR_node_count: $(node_count)
+              TF_VAR_vm_size: $(vm_size)
+  - stage: Plan
+    displayName: Terraform Plan
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - job: PlanJob
+        displayName: Generate Terraform Plan
+        pool:
+          name: aks-agent-pool
+        steps:
+          - checkout: self
+            clean: true
+          - task: AzureCLI@2
+            displayName: Terraform Init
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+              inlineScript: >
+                terraform init -reconfigure \
+                  -backend-config="resource_group_name=$(backend_resource_group_name)" \
+                  -backend-config="storage_account_name=$(backend_storage_account_name)" \
+                  -backend-config="container_name=$(backend_container_name)" \
+                  -backend-config="key=$(backend_key)"
+          - task: AzureCLI@2
+            displayName: Terraform Plan
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+              inlineScript: |
+                terraform providers
+                terraform plan -out=tfplan
+            env:
+              TF_VAR_subscription_id: $(subscription_id)
+              TF_VAR_resource_group_name: $(resource_group_name)
+              TF_VAR_location: $(location)
+              TF_VAR_acr_name: $(acr_name)
+              TF_VAR_aks_cluster_name: $(aks_cluster_name)
+              TF_VAR_node_count: $(node_count)
+              TF_VAR_vm_size: $(vm_size)
+          - task: PublishPipelineArtifact@1
+            displayName: Publish tfplan Artifact
+            inputs:
+              targetPath: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)/tfplan
+              artifact: tfplan
+              publishLocation: pipeline
+  - stage: Apply
+    displayName: Terraform Apply
+    dependsOn: Plan
+    condition: succeeded()
+    jobs:
+      - job: ApplyJob
+        displayName: Apply Terraform
+        pool:
+          name: aks-agent-pool
+        steps:
+          - checkout: self
+            clean: true
+          - task: DownloadPipelineArtifact@2
+            displayName: Download tfplan Artifact
+            inputs:
+              artifact: tfplan
+              path: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+          - task: AzureCLI@2
+            displayName: Terraform Init
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+              inlineScript: >
+                terraform init -reconfigure \
+                  -backend-config="resource_group_name=$(backend_resource_group_name)" \
+                  -backend-config="storage_account_name=$(backend_storage_account_name)" \
+                  -backend-config="container_name=$(backend_container_name)" \
+                  -backend-config="key=$(backend_key)"
+          - task: AzureCLI@2
+            displayName: Terraform Apply
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(System.DefaultWorkingDirectory)/$(WORKING_DIR)
+              inlineScript: |
+                terraform apply -auto-approve "./tfplan"
+            env:
+              TF_VAR_subscription_id: $(subscription_id)
+              TF_VAR_resource_group_name: $(resource_group_name)
+              TF_VAR_location: $(location)
+              TF_VAR_acr_name: $(acr_name)
+              TF_VAR_aks_cluster_name: $(aks_cluster_name)
+              TF_VAR_node_count: $(node_count)
+              TF_VAR_vm_size: $(vm_size)
